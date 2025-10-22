@@ -40,20 +40,13 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
+// Use memory storage for serverless (Vercel) - files stored in RAM
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 10 * 1024 * 1024 * 1024 // 10GB limit
+    fileSize: 50 * 1024 * 1024 // 50MB limit (serverless function limit)
   },
   fileFilter: (req, file, cb) => {
     // Accept audio and video files
@@ -373,150 +366,74 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
       });
     }
 
-    filePath = req.file.path;
     const fileName = req.file.originalname;
-    let audioFilePath = filePath;
+    const fileBuffer = req.file.buffer; // File is in memory as a buffer
+
     console.log(`\n${'='.repeat(80)}`);
     console.log(`🎬 Starting transcription for: ${fileName}`);
     console.log(`📁 File size: ${(req.file.size / 1024 / 1024).toFixed(2)} MB`);
 
-    // Check if it's a video file - convert to MP3 to reduce size
+    // Check if it's a video file
     const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.m4a'];
+    const audioExtensions = ['.mp3', '.wav'];
     const fileExtension = path.extname(fileName).toLowerCase();
 
     if (videoExtensions.includes(fileExtension)) {
-      console.log(`🎥 Video file detected - converting to MP3 for faster processing...`);
-      audioFilePath = await convertToMP3(filePath);
-      convertedFile = audioFilePath;
-      console.log(`✅ Conversion complete`);
+      // Video files not supported on serverless
+      return res.status(400).json({
+        error: 'Video files not supported',
+        message: 'Please convert your video to MP3 or WAV format before uploading. Video conversion is not available on this deployment.',
+        suggestion: 'Use a tool like ffmpeg, VLC, or an online converter to extract audio first.'
+      });
     }
 
-    // Check audio duration and decide if webhook is needed
-    const duration = await getAudioDuration(audioFilePath);
-    const durationMinutes = Math.round(duration / 60);
-    const durationSeconds = Math.round(duration);
-    console.log(`⏱️  Audio duration: ${durationMinutes} minutes (${durationSeconds} seconds)`);
+    if (!audioExtensions.includes(fileExtension)) {
+      return res.status(400).json({
+        error: 'Unsupported file format',
+        message: 'Only MP3 and WAV audio files are supported.',
+        technicalDetails: `Received: ${fileExtension}`
+      });
+    }
 
-    // Prepare video file for playback
-    const videoId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-    const videoFileName = `${videoId}${path.extname(fileName)}`;
-    const newPath = path.join('uploads', videoFileName);
-    fs.renameSync(filePath, newPath);
-    console.log(`💾 Video saved as: ${videoFileName}`);
+    console.log(`🎵 Audio file detected: ${fileExtension}`);
 
-    const audioBuffer = fs.readFileSync(audioFilePath);
-    const audioFileName = path.basename(audioFilePath);
-    const audioFile = new File([audioBuffer], audioFileName, {
-      type: 'audio/mpeg'
+    // Note: Cannot check duration on serverless without ffmpeg
+    // Assume shorter files for now
+    console.log(`⚠️  Duration check skipped (not available on serverless)`);
+
+    // Create File object from buffer
+    const audioFile = new File([fileBuffer], fileName, {
+      type: req.file.mimetype
     });
 
-    let transcription;
-    let useWebhook = false;
+    // Transcribe synchronously (no webhook support on serverless without duration check)
+    console.log(`⚡ Transcribing synchronously`);
+    console.log(`🚀 Calling ElevenLabs API...`);
+    const apiCallStart = Date.now();
 
-    // Debug webhook configuration
-    console.log(`\n${'─'.repeat(80)}`);
-    console.log(`🔧 Webhook Configuration Check:`);
-    console.log(`   Duration: ${durationSeconds}s (threshold: 600s)`);
-    console.log(`   Webhook URL configured: ${process.env.WEBHOOK_URL ? '✅ YES' : '❌ NO'}`);
-    if (process.env.WEBHOOK_URL) {
-      console.log(`   Webhook URL: ${process.env.WEBHOOK_URL}`);
-    }
-    console.log(`   Will use webhook: ${duration > 600 && process.env.WEBHOOK_URL ? '✅ YES' : '❌ NO'}`);
-    console.log(`${'─'.repeat(80)}\n`);
+    const transcription = await elevenlabs.speechToText.convert({
+      file: audioFile,
+      model_id: "scribe_v1",
+      tag_audio_events: true,
+      language_code: null,
+      diarize: true
+    });
 
-    // Use webhook for files longer than 10 minutes (if webhook URL is configured)
-    if (duration > 600 && process.env.WEBHOOK_URL) {
-      console.log(`📡 File is longer than 10 minutes - using async webhook transcription`);
-      useWebhook = true;
+    const apiCallDuration = Date.now() - apiCallStart;
+    console.log(`✅ Transcription completed in ${apiCallDuration}ms`);
+    console.log(`📊 Words transcribed: ${transcription.words?.length || 0}`);
 
-      // Generate request ID
-      const requestId = `req_${videoId}`;
-      console.log(`🆔 Generated request ID: ${requestId}`);
-
-      // Create job record
-      const jobData = {
-        status: 'processing',
-        fileName: fileName,
-        videoUrl: `/api/video/${videoFileName}`,
-        videoId: videoFileName,
-        transcription: null,
-        startedAt: new Date().toISOString(),
-        completedAt: null
-      };
-      transcriptionJobs.set(requestId, jobData);
-      console.log(`💾 Job record created in memory`);
-      console.log(`📊 Current jobs in memory: ${transcriptionJobs.size}`);
-
-      // Start async transcription with webhook
-      console.log(`🚀 Calling ElevenLabs API with webhook=true...`);
-      const apiCallStart = Date.now();
-
-      transcription = await elevenlabs.speechToText.convert({
-        file: audioFile,
-        model_id: "scribe_v1",
-        tag_audio_events: true,
-        language_code: null,
-        diarize: true,
-        webhook: true
-      });
-
-      const apiCallDuration = Date.now() - apiCallStart;
-      console.log(`✅ ElevenLabs API call completed in ${apiCallDuration}ms`);
-      console.log(`📋 API Response:`, JSON.stringify(transcription, null, 2));
-      console.log(`✅ Webhook transcription initiated - request_id: ${requestId}`);
-      console.log(`⏳ Waiting for webhook callback from ElevenLabs...`);
-
-      // Return immediately with request ID for polling
-      const response = {
-        success: true,
-        useWebhook: true,
-        requestId: requestId,
-        fileName: fileName,
-        videoUrl: `/api/video/${videoFileName}`,
-        videoId: videoFileName,
-        timestamp: new Date().toISOString()
-      };
-      console.log(`📤 Returning response to client:`, JSON.stringify(response, null, 2));
-      console.log(`${'='.repeat(80)}\n`);
-      res.json(response);
-
-    } else {
-      // File is short enough - transcribe synchronously
-      console.log(`⚡ File is under 10 minutes or webhook not configured - transcribing synchronously`);
-      console.log(`🚀 Calling ElevenLabs API (synchronous mode)...`);
-      const apiCallStart = Date.now();
-
-      transcription = await elevenlabs.speechToText.convert({
-        file: audioFile,
-        model_id: "scribe_v1",
-        tag_audio_events: true,
-        language_code: null,
-        diarize: true
-      });
-
-      const apiCallDuration = Date.now() - apiCallStart;
-      console.log(`✅ Transcription completed in ${apiCallDuration}ms`);
-      console.log(`📊 Words transcribed: ${transcription.words?.length || 0}`);
-
-      // Return transcription result immediately
-      const response = {
-        success: true,
-        useWebhook: false,
-        fileName: fileName,
-        videoUrl: `/api/video/${videoFileName}`,
-        videoId: videoFileName,
-        transcription: transcription,
-        timestamp: new Date().toISOString()
-      };
-      console.log(`📤 Returning response to client`);
-      console.log(`${'='.repeat(80)}\n`);
-      res.json(response);
-    }
-
-    // Clean up converted audio file if it exists
-    if (convertedFile && fs.existsSync(convertedFile)) {
-      fs.unlinkSync(convertedFile);
-    }
+    // Return transcription result immediately
+    const response = {
+      success: true,
+      useWebhook: false,
+      fileName: fileName,
+      transcription: transcription,
+      timestamp: new Date().toISOString()
+    };
+    console.log(`📤 Returning response to client`);
+    console.log(`${'='.repeat(80)}\n`);
+    res.json(response);
 
   } catch (error) {
     console.error('❌ TRANSCRIPTION ERROR:', error);
