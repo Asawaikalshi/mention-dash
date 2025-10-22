@@ -126,22 +126,117 @@ transcribeBtn.addEventListener('click', async () => {
     }
 });
 
+// Extract audio from video using ffmpeg.wasm
+let ffmpegInstance = null;
+
+async function extractAudio(videoFile) {
+    try {
+        progressText.textContent = 'Loading audio extraction tool...';
+        progressFill.style.width = '10%';
+
+        // Initialize ffmpeg instance
+        if (!ffmpegInstance) {
+            // Wait for ffmpeg to be loaded
+            while (!window.FFmpeg) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            ffmpegInstance = new window.FFmpeg();
+
+            // Load ffmpeg core
+            const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+            await ffmpegInstance.load({
+                coreURL: await window.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+                wasmURL: await window.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+            });
+
+            console.log('✅ FFmpeg.wasm initialized');
+        }
+
+        progressText.textContent = 'Extracting audio from video...';
+        progressFill.style.width = '20%';
+
+        // Write video to ffmpeg virtual filesystem
+        const inputFileName = 'input' + videoFile.name.substring(videoFile.name.lastIndexOf('.'));
+        await ffmpegInstance.writeFile(inputFileName, await window.fetchFile(videoFile));
+
+        progressFill.style.width = '30%';
+
+        // Extract audio to MP3
+        const outputFileName = 'output.mp3';
+        await ffmpegInstance.exec([
+            '-i', inputFileName,
+            '-vn', // No video
+            '-acodec', 'libmp3lame',
+            '-q:a', '2', // High quality
+            outputFileName
+        ]);
+
+        progressText.textContent = 'Audio extraction complete!';
+        progressFill.style.width = '45%';
+
+        // Read the output file
+        const data = await ffmpegInstance.readFile(outputFileName);
+
+        // Clean up
+        await ffmpegInstance.deleteFile(inputFileName);
+        await ffmpegInstance.deleteFile(outputFileName);
+
+        // Create blob from extracted audio
+        const audioBlob = new Blob([data.buffer], { type: 'audio/mpeg' });
+        console.log(`✅ Extracted ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB of audio`);
+
+        return audioBlob;
+
+    } catch (error) {
+        console.error('❌ Audio extraction failed:', error);
+        throw new Error('Failed to extract audio from video: ' + error.message);
+    }
+}
+
 // Upload and Transcribe
 async function uploadAndTranscribe(file) {
-    const formData = new FormData();
-    formData.append('video', file);
-
-    // Update progress
-    progressFill.style.width = '10%';
-    progressText.textContent = 'Uploading file...';
+    let fileToUpload = file;
+    let originalVideoFile = null;
 
     try {
+        // Check if it's a video file that needs audio extraction
+        const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.m4a'];
+        const audioExtensions = ['.mp3', '.wav'];
+        const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+        if (videoExtensions.includes(fileExtension)) {
+            console.log('🎥 Video file detected - extracting audio...');
+            originalVideoFile = file;
+
+            // Extract audio from video
+            const audioBlob = await extractAudio(file);
+
+            // Create a File object from the blob
+            fileToUpload = new File([audioBlob], file.name.replace(fileExtension, '.mp3'), {
+                type: 'audio/mpeg'
+            });
+
+            console.log(`✅ Using extracted audio: ${fileToUpload.name}`);
+        } else if (audioExtensions.includes(fileExtension)) {
+            console.log('🎵 Audio file detected - uploading directly');
+        } else {
+            throw new Error('Unsupported file format. Please upload MP4, MOV, MP3, or WAV files.');
+        }
+
+        const formData = new FormData();
+        formData.append('video', fileToUpload);
+
+        // Update progress
+        progressFill.style.width = '50%';
+        progressText.textContent = 'Uploading file...';
+
         const xhr = new XMLHttpRequest();
 
         // Track upload progress
         xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
-                const percentComplete = (e.loaded / e.total) * 50; // First 50% is upload
+                const percentComplete = 50 + (e.loaded / e.total) * 25; // 50-75% is upload
                 progressFill.style.width = percentComplete + '%';
                 progressText.textContent = `Uploading... ${Math.round(percentComplete)}%`;
             }
@@ -152,13 +247,20 @@ async function uploadAndTranscribe(file) {
             if (xhr.status === 200) {
                 const response = JSON.parse(xhr.responseText);
 
+                // Add video URL to response if we extracted audio from video
+                if (originalVideoFile) {
+                    response.clientVideoUrl = URL.createObjectURL(originalVideoFile);
+                    response.clientVideoFile = originalVideoFile.name;
+                    console.log('📹 Created video URL for playback:', response.clientVideoFile);
+                }
+
                 // Check if using webhook (async processing)
                 if (response.useWebhook && response.requestId) {
-                    progressFill.style.width = '50%';
+                    progressFill.style.width = '75%';
                     progressText.textContent = 'Processing transcription (this may take several minutes)...';
 
                     // Poll for results
-                    pollTranscriptionStatus(response.requestId, response);
+                    pollTranscriptionStatus(response.requestId, response, originalVideoFile);
                 } else {
                     // Synchronous response - display immediately
                     progressFill.style.width = '100%';
@@ -179,35 +281,20 @@ async function uploadAndTranscribe(file) {
                     console.error('Server returned HTML error:', xhr.responseText);
                     errorMessage = `Server error (${xhr.status}). Check browser console for details.`;
                 }
-                throw new Error(errorMessage);
+                showError(errorMessage);
             }
         });
 
         xhr.addEventListener('error', () => {
-            throw new Error('Network error occurred');
+            showError('Network error occurred');
         });
-
-        // Start transcription
-        progressFill.style.width = '50%';
-        progressText.textContent = 'Processing transcription...';
 
         xhr.open('POST', '/api/transcribe');
         xhr.send(formData);
 
-        // Simulate progress for transcription (since we can't track it)
-        let progress = 50;
-        const interval = setInterval(() => {
-            if (progress < 90) {
-                progress += 2;
-                progressFill.style.width = progress + '%';
-            }
-        }, 200);
-
-        xhr.addEventListener('load', () => clearInterval(interval));
-        xhr.addEventListener('error', () => clearInterval(interval));
-
     } catch (error) {
-        throw error;
+        console.error('❌ Upload failed:', error);
+        showError(error.message);
     }
 }
 
@@ -304,13 +391,15 @@ function displayResults(response) {
     transcriptionData = response;
     window.transcriptionData = response; // Make available to agent
 
-    // Show video player if video URL is available
-    if (response.videoUrl) {
+    // Show video player if video URL is available (server-provided or client-side)
+    const videoUrl = response.clientVideoUrl || response.videoUrl;
+    if (videoUrl) {
         const videoPlayerSection = document.getElementById('videoPlayerSection');
         const videoPlayer = document.getElementById('videoPlayer');
 
-        videoPlayer.src = response.videoUrl;
+        videoPlayer.src = videoUrl;
         videoPlayerSection.style.display = 'block';
+        console.log('🎬 Video player ready:', response.clientVideoFile || response.fileName);
     }
 
     progressSection.style.display = 'none';
