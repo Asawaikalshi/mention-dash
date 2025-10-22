@@ -62,16 +62,26 @@ export default async function handler(req, res) {
     const fileName = req.file.originalname;
     const fileBuffer = req.file.buffer;
     const fileExtension = path.extname(fileName).toLowerCase();
+    const mimeType = req.file.mimetype;
 
-    console.log(`🎬 File: ${fileName}, Size: ${(req.file.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`🎬 File: ${fileName}`);
+    console.log(`📁 Size: ${(req.file.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`📄 Extension: ${fileExtension}`);
+    console.log(`🏷️  MIME type: ${mimeType}`);
 
-    // Only allow audio files
-    const audioExtensions = ['.mp3', '.wav'];
-    if (!audioExtensions.includes(fileExtension)) {
+    // Only allow audio files - check both extension and mime type
+    const audioExtensions = ['.mp3', '.wav', '.m4a'];
+    const audioMimeTypes = ['audio/mpeg', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/mp3', 'audio/x-m4a', 'audio/mp4'];
+
+    const isValidExtension = audioExtensions.includes(fileExtension);
+    const isValidMimeType = audioMimeTypes.includes(mimeType);
+
+    if (!isValidExtension && !isValidMimeType) {
+      console.log(`❌ File rejected - Extension: ${fileExtension}, MIME: ${mimeType}`);
       return res.status(400).json({
         error: 'Unsupported file format',
-        message: 'Only MP3 and WAV files are supported on this deployment.',
-        technicalDetails: `Received: ${fileExtension}`
+        message: 'Only MP3, WAV, and M4A audio files are supported.',
+        technicalDetails: `Received extension: ${fileExtension}, MIME type: ${mimeType}`
       });
     }
 
