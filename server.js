@@ -547,6 +547,22 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Global error handler - catches all errors and returns JSON
+app.use((err, req, res, next) => {
+  console.error('❌ UNHANDLED ERROR:', err);
+  console.error('Error stack:', err.stack);
+  console.error('Request path:', req.path);
+  console.error('Request method:', req.method);
+
+  // Always return JSON error
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal Server Error',
+    message: err.userMessage || 'An unexpected error occurred',
+    technicalDetails: err.message,
+    path: req.path
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`\n🚀 Video Transcription Server running on http://localhost:${PORT}`);
