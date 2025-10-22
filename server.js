@@ -355,24 +355,27 @@ app.post('/api/chat', async (req, res) => {
 
 // Upload and transcribe endpoint
 app.post('/api/transcribe', upload.single('video'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
-
-  if (!elevenlabs) {
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
-    return res.status(500).json({
-      error: 'ElevenLabs API key not configured. Please add ELEVENLABS_API_KEY to .env file'
-    });
-  }
-
-  const filePath = req.file.path;
-  const fileName = req.file.originalname;
-  let audioFilePath = filePath;
+  let filePath = null;
   let convertedFile = null;
 
   try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    if (!elevenlabs) {
+      // Clean up uploaded file
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(500).json({
+        error: 'ElevenLabs API key not configured. Please add ELEVENLABS_API_KEY to .env file'
+      });
+    }
+
+    filePath = req.file.path;
+    const fileName = req.file.originalname;
+    let audioFilePath = filePath;
     console.log(`\n${'='.repeat(80)}`);
     console.log(`🎬 Starting transcription for: ${fileName}`);
     console.log(`📁 File size: ${(req.file.size / 1024 / 1024).toFixed(2)} MB`);
@@ -516,42 +519,56 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Transcription error:', error);
+    console.error('❌ TRANSCRIPTION ERROR:', error);
+    console.error('Error stack:', error.stack);
 
     // Clean up uploaded files on error
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    if (convertedFile && fs.existsSync(convertedFile)) {
-      fs.unlinkSync(convertedFile);
+    try {
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      if (convertedFile && fs.existsSync(convertedFile)) {
+        fs.unlinkSync(convertedFile);
+      }
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
     }
 
     // Better error messages for common issues
     let errorMessage = 'Transcription failed';
     let userMessage = 'An error occurred during transcription. Please try again.';
+    let technicalDetails = error.message || String(error);
 
-    if (error.message.includes('timeout')) {
+    if (error.message && error.message.includes('ffmpeg')) {
+      errorMessage = 'Video conversion not supported';
+      userMessage = 'Video file conversion is not available on this deployment. Please upload MP3 or WAV audio files directly.';
+      technicalDetails = 'ffmpeg is not available in serverless environment';
+    } else if (error.message && error.message.includes('timeout')) {
       errorMessage = 'Request timeout';
-      userMessage = 'The file is too large and took too long to process. Try:\n• Using a smaller/shorter video\n• Compressing the video file\n• Converting to a lower quality audio format (e.g., MP3)';
-    } else if (error.message.includes('file size')) {
+      userMessage = 'The file is too large and took too long to process. Try using a smaller/shorter file.';
+    } else if (error.message && error.message.includes('file size')) {
       errorMessage = 'File too large';
       userMessage = 'The file exceeds the maximum size limit. Please use a smaller file.';
-    } else if (error.message.includes('format')) {
+    } else if (error.message && error.message.includes('format')) {
       errorMessage = 'Unsupported format';
-      userMessage = 'This file format is not supported. Please use MP4, MOV, AVI, MKV, MP3, or WAV.';
-    } else if (error.message.includes('quota') || error.message.includes('limit')) {
+      userMessage = 'This file format is not supported. Please use MP3 or WAV audio files.';
+    } else if (error.message && (error.message.includes('quota') || error.message.includes('limit'))) {
       errorMessage = 'API quota exceeded';
       userMessage = 'The ElevenLabs API quota has been exceeded. Please try again later.';
     } else if (error.response?.status === 401) {
       errorMessage = 'Authentication failed';
       userMessage = 'Invalid API key. Please check your ElevenLabs API configuration.';
+    } else if (error.code === 'ENOENT') {
+      errorMessage = 'File system error';
+      userMessage = 'Unable to access file storage. This deployment may not support file uploads.';
+      technicalDetails = 'File system operations not available in serverless environment';
     }
 
     res.status(500).json({
       error: errorMessage,
       message: userMessage,
-      technicalDetails: error.message,
-      suggestion: 'For large files (600MB+), consider converting to audio-only format or compressing before upload.'
+      technicalDetails: technicalDetails,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
