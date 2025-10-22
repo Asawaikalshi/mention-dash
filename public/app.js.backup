@@ -1,0 +1,485 @@
+// DOM Elements
+const uploadArea = document.getElementById('uploadArea');
+const fileInput = document.getElementById('fileInput');
+const selectedFile = document.getElementById('selectedFile');
+const fileName = document.getElementById('fileName');
+const fileSize = document.getElementById('fileSize');
+const removeBtn = document.getElementById('removeBtn');
+const transcribeBtn = document.getElementById('transcribeBtn');
+const btnText = document.getElementById('btnText');
+const spinner = document.getElementById('spinner');
+
+const uploadSection = document.getElementById('uploadSection');
+const progressSection = document.getElementById('progressSection');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progressText');
+
+const resultsSection = document.getElementById('resultsSection');
+const resultsMeta = document.getElementById('resultsMeta');
+const transcriptContent = document.getElementById('transcriptContent');
+const downloadBtn = document.getElementById('downloadBtn');
+const newBtn = document.getElementById('newBtn');
+
+const errorSection = document.getElementById('errorSection');
+const errorMessage = document.getElementById('errorMessage');
+const retryBtn = document.getElementById('retryBtn');
+
+// State
+let selectedVideoFile = null;
+let transcriptionData = null;
+
+// Upload Area Click
+uploadArea.addEventListener('click', () => {
+    if (!selectedVideoFile) {
+        fileInput.click();
+    }
+});
+
+// File Input Change
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+        handleFileSelect(file);
+    }
+});
+
+// Drag and Drop
+uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('drag-over');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('drag-over');
+});
+
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('drag-over');
+
+    const file = e.dataTransfer.files[0];
+    if (file) {
+        handleFileSelect(file);
+    }
+});
+
+// Handle File Selection
+function handleFileSelect(file) {
+    // Validate file type
+    const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
+                       'audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/x-m4a', 'audio/mp4'];
+
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(mp4|mov|avi|mkv|mp3|wav|m4a)$/i)) {
+        alert('Please select a valid video or audio file');
+        return;
+    }
+
+    // Validate file size (500MB)
+    if (file.size > 500 * 1024 * 1024) {
+        alert('File size must be less than 500MB');
+        return;
+    }
+
+    selectedVideoFile = file;
+
+    // Update UI
+    fileName.textContent = file.name;
+    fileSize.textContent = formatFileSize(file.size);
+
+    document.querySelector('.upload-content').style.display = 'none';
+    selectedFile.style.display = 'flex';
+    transcribeBtn.disabled = false;
+}
+
+// Remove File
+removeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetFileSelection();
+});
+
+function resetFileSelection() {
+    selectedVideoFile = null;
+    fileInput.value = '';
+
+    document.querySelector('.upload-content').style.display = 'block';
+    selectedFile.style.display = 'none';
+    transcribeBtn.disabled = true;
+}
+
+// Transcribe Button
+transcribeBtn.addEventListener('click', async () => {
+    if (!selectedVideoFile) return;
+
+    // Hide upload section, show progress
+    uploadSection.style.display = 'none';
+    progressSection.style.display = 'block';
+    resultsSection.style.display = 'none';
+    errorSection.style.display = 'none';
+
+    try {
+        await uploadAndTranscribe(selectedVideoFile);
+    } catch (error) {
+        showError(error.message);
+    }
+});
+
+// Upload and Transcribe
+async function uploadAndTranscribe(file) {
+    const formData = new FormData();
+    formData.append('video', file);
+
+    // Update progress
+    progressFill.style.width = '10%';
+    progressText.textContent = 'Uploading file...';
+
+    try {
+        const xhr = new XMLHttpRequest();
+
+        // Track upload progress
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percentComplete = (e.loaded / e.total) * 50; // First 50% is upload
+                progressFill.style.width = percentComplete + '%';
+                progressText.textContent = `Uploading... ${Math.round(percentComplete)}%`;
+            }
+        });
+
+        // Handle completion
+        xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+                const response = JSON.parse(xhr.responseText);
+                progressFill.style.width = '100%';
+                progressText.textContent = 'Transcription complete!';
+
+                setTimeout(() => {
+                    displayResults(response);
+                }, 500);
+            } else {
+                const error = JSON.parse(xhr.responseText);
+                throw new Error(error.error || 'Transcription failed');
+            }
+        });
+
+        xhr.addEventListener('error', () => {
+            throw new Error('Network error occurred');
+        });
+
+        // Start transcription
+        progressFill.style.width = '50%';
+        progressText.textContent = 'Processing transcription...';
+
+        xhr.open('POST', '/api/transcribe');
+        xhr.send(formData);
+
+        // Simulate progress for transcription (since we can't track it)
+        let progress = 50;
+        const interval = setInterval(() => {
+            if (progress < 90) {
+                progress += 2;
+                progressFill.style.width = progress + '%';
+            }
+        }, 200);
+
+        xhr.addEventListener('load', () => clearInterval(interval));
+        xhr.addEventListener('error', () => clearInterval(interval));
+
+    } catch (error) {
+        console.error('Transcription error:', error);
+        throw error;
+    }
+}
+
+// Display Results
+function displayResults(response) {
+    transcriptionData = response;
+
+    // Show video player if video URL is available
+    if (response.videoUrl) {
+        const videoPlayerSection = document.getElementById('videoPlayerSection');
+        const videoPlayer = document.getElementById('videoPlayer');
+
+        videoPlayer.src = response.videoUrl;
+        videoPlayerSection.style.display = 'block';
+    }
+
+    progressSection.style.display = 'none';
+    resultsSection.style.display = 'block';
+
+    // Display metadata
+    const transcription = response.transcription;
+    const wordCount = transcription.words ? transcription.words.length : 0;
+    const speakers = transcription.words ?
+        [...new Set(transcription.words.map(w => w.speaker_id).filter(Boolean))].length : 0;
+
+    const duration = transcription.words && transcription.words.length > 0 ?
+        Math.round(transcription.words[transcription.words.length - 1].end) : 0;
+
+    resultsMeta.innerHTML = `
+        <div class="meta-item">
+            <div class="meta-label">File Name</div>
+            <div class="meta-value">${response.fileName}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Word Count</div>
+            <div class="meta-value">${wordCount}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Speakers</div>
+            <div class="meta-value">${speakers || 'N/A'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Duration</div>
+            <div class="meta-value">${formatDuration(duration)}</div>
+        </div>
+    `;
+
+    // Display transcript
+    displayTranscript(transcription);
+}
+
+// Display Transcript
+function displayTranscript(transcription) {
+    if (!transcription.words || transcription.words.length === 0) {
+        transcriptContent.innerHTML = '<p>No transcription data available.</p>';
+        return;
+    }
+
+    // Group words by speaker
+    const speakerGroups = [];
+    let currentGroup = null;
+
+    transcription.words.forEach(word => {
+        if (!currentGroup || currentGroup.speaker !== word.speaker_id) {
+            currentGroup = {
+                speaker: word.speaker_id || 'Unknown',
+                startTime: word.start,
+                words: []
+            };
+            speakerGroups.push(currentGroup);
+        }
+        currentGroup.words.push(word);
+    });
+
+    // Render speaker groups
+    transcriptContent.innerHTML = speakerGroups.map((group, index) => `
+        <div class="speaker-block speaker-${index % 3}">
+            <div class="speaker-header">
+                <div class="speaker-name">
+                    ${group.speaker}
+                </div>
+                <div class="timestamp">${formatTime(group.startTime)}</div>
+            </div>
+            <div class="speaker-text">
+                ${group.words.map(word =>
+                    `<span class="word" data-start="${word.start}" data-end="${word.end}">${word.text}</span>`
+                ).join('')}
+            </div>
+        </div>
+    `).join('');
+
+    // Setup keyword input listener
+    setupKeywordSearch();
+
+    // Add click handlers to words for video seeking
+    document.querySelectorAll('.word').forEach(wordEl => {
+        wordEl.addEventListener('click', () => {
+            const startTime = parseFloat(wordEl.dataset.start);
+            seekToTime(startTime);
+        });
+    });
+}
+
+// Setup Keyword Search
+function setupKeywordSearch() {
+    const keywordInput = document.getElementById('keywordInput');
+
+    keywordInput.addEventListener('input', (e) => {
+        const keywords = e.target.value
+            .split(',')
+            .map(k => k.trim().toLowerCase())
+            .filter(k => k.length > 0);
+
+        highlightKeywords(keywords);
+        updateKeywordStats(keywords);
+    });
+}
+
+// Highlight Keywords in Transcript
+function highlightKeywords(keywords) {
+    const wordElements = document.querySelectorAll('.word');
+
+    wordElements.forEach(wordEl => {
+        const wordText = wordEl.textContent.toLowerCase().trim();
+
+        // Remove punctuation from the word for comparison
+        const cleanWord = wordText.replace(/[^\w\s]/g, '');
+
+        // Remove previous highlighting
+        wordEl.classList.remove('highlighted');
+
+        // Check if word matches any keyword (exact match only)
+        const matches = keywords.some(keyword => {
+            const cleanKeyword = keyword.toLowerCase().trim();
+
+            // Exact match
+            if (cleanWord === cleanKeyword) {
+                return true;
+            }
+
+            // Also check with punctuation included
+            if (wordText === cleanKeyword) {
+                return true;
+            }
+
+            return false;
+        });
+
+        if (matches) {
+            wordEl.classList.add('highlighted');
+        }
+    });
+}
+
+// Update Keyword Stats
+function updateKeywordStats(keywords) {
+    const keywordStats = document.getElementById('keywordStats');
+
+    if (keywords.length === 0) {
+        keywordStats.innerHTML = '';
+        return;
+    }
+
+    const highlightedWords = document.querySelectorAll('.word.highlighted');
+    const totalMatches = highlightedWords.length;
+
+    // Count matches per keyword
+    const keywordCounts = {};
+    keywords.forEach(keyword => {
+        keywordCounts[keyword] = 0;
+    });
+
+    highlightedWords.forEach(wordEl => {
+        const wordText = wordEl.textContent.toLowerCase().trim();
+        const cleanWord = wordText.replace(/[^\w\s]/g, '');
+
+        keywords.forEach(keyword => {
+            const cleanKeyword = keyword.toLowerCase().trim();
+
+            // Exact match only
+            if (cleanWord === cleanKeyword || wordText === cleanKeyword) {
+                keywordCounts[keyword]++;
+            }
+        });
+    });
+
+    keywordStats.innerHTML = `
+        <div class="keyword-stat">
+            <span class="keyword-stat-label">Total Matches:</span>
+            <span class="keyword-stat-value">${totalMatches}</span>
+        </div>
+        ${keywords.map(keyword => `
+            <div class="keyword-stat">
+                <span class="keyword-stat-label">"${keyword}":</span>
+                <span class="keyword-stat-value">${keywordCounts[keyword]}</span>
+            </div>
+        `).join('')}
+    `;
+}
+
+// Seek to Time in Video
+function seekToTime(time) {
+    const videoPlayer = document.getElementById('videoPlayer');
+    if (videoPlayer && videoPlayer.src) {
+        videoPlayer.currentTime = time;
+        videoPlayer.play();
+
+        // Scroll video into view
+        videoPlayer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+}
+
+// Download JSON
+downloadBtn.addEventListener('click', () => {
+    if (!transcriptionData) return;
+
+    const dataStr = JSON.stringify(transcriptionData, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcription-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+});
+
+// New Transcription
+newBtn.addEventListener('click', () => {
+    resetFileSelection();
+    transcriptionData = null;
+
+    // Hide video player
+    const videoPlayerSection = document.getElementById('videoPlayerSection');
+    const videoPlayer = document.getElementById('videoPlayer');
+    videoPlayerSection.style.display = 'none';
+    videoPlayer.src = '';
+
+    // Clear keyword input
+    const keywordInput = document.getElementById('keywordInput');
+    keywordInput.value = '';
+
+    resultsSection.style.display = 'none';
+    uploadSection.style.display = 'block';
+    progressFill.style.width = '0%';
+});
+
+// Retry Button
+retryBtn.addEventListener('click', () => {
+    errorSection.style.display = 'none';
+    uploadSection.style.display = 'block';
+});
+
+// Show Error
+function showError(message) {
+    progressSection.style.display = 'none';
+    errorSection.style.display = 'block';
+    errorMessage.textContent = message;
+}
+
+// Utility Functions
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function formatDuration(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    if (mins === 0) return `${secs}s`;
+    return `${mins}m ${secs}s`;
+}
+
+// Check API health on load
+window.addEventListener('load', async () => {
+    try {
+        const response = await fetch('/api/health');
+        const data = await response.json();
+
+        if (!data.apiKeyConfigured) {
+            console.warn('⚠️ ElevenLabs API key not configured');
+        }
+    } catch (error) {
+        console.error('Failed to check API health:', error);
+    }
+});
