@@ -169,8 +169,17 @@ async function uploadAndTranscribe(file) {
                     }, 500);
                 }
             } else {
-                const error = JSON.parse(xhr.responseText);
-                throw new Error(error.error || 'Transcription failed');
+                // Try to parse JSON error, but handle HTML error pages too
+                let errorMessage = 'Transcription failed';
+                try {
+                    const error = JSON.parse(xhr.responseText);
+                    errorMessage = error.error || error.message || 'Transcription failed';
+                } catch (e) {
+                    // Server returned HTML (probably a 500 error page)
+                    console.error('Server returned HTML error:', xhr.responseText);
+                    errorMessage = `Server error (${xhr.status}). Check browser console for details.`;
+                }
+                throw new Error(errorMessage);
             }
         });
 
