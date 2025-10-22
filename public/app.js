@@ -207,15 +207,36 @@ async function pollTranscriptionStatus(requestId, initialResponse) {
     const maxAttempts = 120; // 120 attempts = 10 minutes max (5 sec intervals)
     let attempts = 0;
 
+    console.log(`\n${'='.repeat(80)}`);
+    console.log('🔄 STARTING WEBHOOK POLLING');
+    console.log(`🆔 Request ID: ${requestId}`);
+    console.log(`⏱️  Max attempts: ${maxAttempts} (${maxAttempts * 5 / 60} minutes)`);
+    console.log(`${'='.repeat(80)}\n`);
+
     const poll = async () => {
         attempts++;
+        console.log(`\n📡 Poll attempt #${attempts}/${maxAttempts}`);
 
         try {
+            console.log(`🌐 Fetching: /api/transcription/status/${requestId}`);
             const response = await fetch(`/api/transcription/status/${requestId}`);
+            console.log(`📨 Response status: ${response.status} ${response.statusText}`);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
             const data = await response.json();
+            console.log(`📦 Response data:`, data);
+            console.log(`📊 Status: ${data.status}`);
 
             if (data.status === 'completed' && data.transcription) {
                 // Transcription is done!
+                console.log(`✅ TRANSCRIPTION COMPLETED!`);
+                console.log(`📝 Words received: ${data.transcription.words?.length || 0}`);
+                console.log(`⏱️  Total polling time: ${attempts * 5} seconds`);
+                console.log(`${'='.repeat(80)}\n`);
+
                 progressFill.style.width = '100%';
                 progressText.textContent = 'Transcription complete!';
 
@@ -230,6 +251,7 @@ async function pollTranscriptionStatus(requestId, initialResponse) {
             } else if (data.status === 'processing') {
                 // Still processing - update progress message
                 const elapsed = Math.floor((attempts * 5) / 60);
+                console.log(`⏳ Still processing... (${elapsed} min elapsed)`);
                 progressText.textContent = `Processing transcription... (${elapsed} min elapsed)`;
 
                 // Animate progress bar slightly
@@ -238,23 +260,33 @@ async function pollTranscriptionStatus(requestId, initialResponse) {
 
                 if (attempts < maxAttempts) {
                     // Poll again in 5 seconds
+                    console.log(`⏰ Scheduling next poll in 5 seconds...`);
                     setTimeout(poll, 5000);
                 } else {
+                    console.error(`❌ TIMEOUT: Exceeded max attempts (${maxAttempts})`);
                     throw new Error('Transcription timeout - please try again or contact support');
                 }
 
             } else {
+                console.error(`❌ Unknown status received: ${data.status}`);
                 throw new Error('Unknown transcription status: ' + data.status);
             }
 
         } catch (error) {
-            console.error('Polling error:', error);
+            console.error('❌ POLLING ERROR:', error);
+            console.error('Error details:', {
+                message: error.message,
+                stack: error.stack,
+                attempt: attempts
+            });
+            console.log(`${'='.repeat(80)}\n`);
             progressSection.style.display = 'none';
             alert('Error checking transcription status: ' + error.message);
         }
     };
 
     // Start polling
+    console.log('🚀 Starting first poll immediately...');
     poll();
 }
 

@@ -127,15 +127,25 @@ app.get('/api/health', (req, res) => {
 // Webhook endpoint for async transcription results
 app.post('/api/webhook/transcription', express.json(), (req, res) => {
   try {
-    console.log('📨 Received webhook from ElevenLabs');
+    console.log(`\n${'🔔'.repeat(40)}`);
+    console.log('📨 WEBHOOK RECEIVED FROM ELEVENLABS');
+    console.log(`${'─'.repeat(80)}`);
+    console.log('🕐 Timestamp:', new Date().toISOString());
+    console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
+    console.log(`${'─'.repeat(80)}`);
 
     // Verify webhook signature if secret is configured
     if (process.env.WEBHOOK_SECRET) {
+      console.log('🔐 Webhook secret is configured - verifying signature...');
       const signature = req.headers['xi-signature'];
+
       if (!signature) {
-        console.warn('⚠️  Missing webhook signature');
+        console.warn('⚠️  Missing webhook signature header (xi-signature)');
+        console.log('📋 Available headers:', Object.keys(req.headers).join(', '));
         return res.status(401).json({ error: 'Missing signature' });
       }
+
+      console.log('🔑 Received signature:', signature);
 
       // Verify HMAC signature
       const payload = JSON.stringify(req.body);
@@ -144,48 +154,87 @@ app.post('/api/webhook/transcription', express.json(), (req, res) => {
         .update(payload)
         .digest('hex');
 
+      console.log('🔑 Expected signature:', expectedSignature);
+      console.log('✅ Signatures match:', signature === expectedSignature);
+
       if (signature !== expectedSignature) {
-        console.warn('⚠️  Invalid webhook signature');
+        console.warn('⚠️  Invalid webhook signature - rejecting request');
         return res.status(401).json({ error: 'Invalid signature' });
       }
 
-      console.log('✅ Webhook signature verified');
+      console.log('✅ Webhook signature verified successfully');
+    } else {
+      console.log('⚠️  No webhook secret configured - skipping signature verification');
     }
+
+    console.log(`${'─'.repeat(80)}`);
+    console.log('📦 Raw webhook body:', JSON.stringify(req.body, null, 2));
+    console.log(`${'─'.repeat(80)}`);
 
     // Validate webhook payload
     if (!req.body || req.body.type !== 'speech_to_text_transcription') {
-      console.warn('⚠️  Invalid webhook payload received');
+      console.warn('⚠️  Invalid webhook payload type received');
+      console.warn('   Expected: speech_to_text_transcription');
+      console.warn('   Received:', req.body?.type || 'undefined');
       return res.status(400).json({ error: 'Invalid webhook payload' });
     }
 
-    console.log('📨 Webhook payload:', JSON.stringify(req.body, null, 2));
+    console.log('✅ Webhook type validated: speech_to_text_transcription');
 
-    const { request_id, transcription } = req.body.data;
+    const { request_id, transcription } = req.body.data || {};
+
+    console.log('🆔 Request ID from webhook:', request_id);
+    console.log('📊 Transcription data present:', !!transcription);
+    if (transcription) {
+      console.log('📝 Transcription words count:', transcription.words?.length || 0);
+    }
 
     if (!request_id || !transcription) {
       console.warn('⚠️  Missing required fields in webhook payload');
+      console.warn('   request_id present:', !!request_id);
+      console.warn('   transcription present:', !!transcription);
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     // Look up the job
+    console.log(`${'─'.repeat(80)}`);
+    console.log('🔍 Looking up job in memory...');
+    console.log('📊 Total jobs in memory:', transcriptionJobs.size);
+    console.log('🗂️  All job IDs:', Array.from(transcriptionJobs.keys()).join(', '));
+
     const job = transcriptionJobs.get(request_id);
+
     if (!job) {
       console.warn(`⚠️  No job found for request_id: ${request_id}`);
+      console.warn('❌ This request_id does not exist in our job tracking');
       return res.status(404).json({ error: 'Job not found' });
     }
+
+    console.log('✅ Job found in memory!');
+    console.log('📋 Current job status:', job.status);
+    console.log('📁 Job file name:', job.fileName);
 
     // Update job status
     job.status = 'completed';
     job.transcription = transcription;
     job.completedAt = new Date().toISOString();
 
-    console.log(`✅ Transcription completed for job: ${request_id}`);
+    console.log(`${'─'.repeat(80)}`);
+    console.log('✅ Job updated successfully!');
+    console.log('   Status: processing → completed');
+    console.log('   Completed at:', job.completedAt);
+    console.log('   Words transcribed:', transcription.words?.length || 0);
+    console.log(`${'─'.repeat(80)}`);
 
     // Send success response to ElevenLabs
+    console.log('📤 Sending success response to ElevenLabs');
+    console.log(`${'🔔'.repeat(40)}\n`);
     res.status(200).json({ success: true });
 
   } catch (error) {
-    console.error('❌ Webhook error:', error);
+    console.error('❌ WEBHOOK ERROR:', error);
+    console.error('Stack trace:', error.stack);
+    console.log(`${'🔔'.repeat(40)}\n`);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -193,13 +242,28 @@ app.post('/api/webhook/transcription', express.json(), (req, res) => {
 // Status endpoint for polling transcription progress
 app.get('/api/transcription/status/:requestId', (req, res) => {
   const { requestId } = req.params;
+
+  console.log(`\n🔍 STATUS POLL REQUEST`);
+  console.log(`🆔 Request ID: ${requestId}`);
+  console.log(`📊 Total jobs in memory: ${transcriptionJobs.size}`);
+  console.log(`🗂️  All job IDs: ${Array.from(transcriptionJobs.keys()).join(', ')}`);
+
   const job = transcriptionJobs.get(requestId);
 
   if (!job) {
+    console.warn(`❌ Job not found for request_id: ${requestId}`);
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  res.json({
+  console.log(`✅ Job found! Status: ${job.status}`);
+  console.log(`📁 File: ${job.fileName}`);
+  console.log(`⏱️  Started: ${job.startedAt}`);
+  if (job.status === 'completed') {
+    console.log(`✅ Completed: ${job.completedAt}`);
+    console.log(`📝 Words: ${job.transcription?.words?.length || 0}`);
+  }
+
+  const response = {
     status: job.status,
     fileName: job.fileName,
     videoUrl: job.videoUrl,
@@ -207,7 +271,10 @@ app.get('/api/transcription/status/:requestId', (req, res) => {
     transcription: job.transcription,
     startedAt: job.startedAt,
     completedAt: job.completedAt
-  });
+  };
+
+  console.log(`📤 Sending status response\n`);
+  res.json(response);
 });
 
 // Agent configuration endpoint
@@ -306,27 +373,33 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
   let convertedFile = null;
 
   try {
-    console.log(`Starting transcription for: ${fileName}`);
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`🎬 Starting transcription for: ${fileName}`);
+    console.log(`📁 File size: ${(req.file.size / 1024 / 1024).toFixed(2)} MB`);
 
     // Check if it's a video file - convert to MP3 to reduce size
     const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.m4a'];
     const fileExtension = path.extname(fileName).toLowerCase();
 
     if (videoExtensions.includes(fileExtension)) {
-      console.log(`Video file detected - converting to MP3 for faster processing...`);
+      console.log(`🎥 Video file detected - converting to MP3 for faster processing...`);
       audioFilePath = await convertToMP3(filePath);
       convertedFile = audioFilePath;
+      console.log(`✅ Conversion complete`);
     }
 
     // Check audio duration and decide if webhook is needed
     const duration = await getAudioDuration(audioFilePath);
-    console.log(`Audio duration: ${Math.round(duration / 60)} minutes`);
+    const durationMinutes = Math.round(duration / 60);
+    const durationSeconds = Math.round(duration);
+    console.log(`⏱️  Audio duration: ${durationMinutes} minutes (${durationSeconds} seconds)`);
 
     // Prepare video file for playback
     const videoId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
     const videoFileName = `${videoId}${path.extname(fileName)}`;
     const newPath = path.join('uploads', videoFileName);
     fs.renameSync(filePath, newPath);
+    console.log(`💾 Video saved as: ${videoFileName}`);
 
     const audioBuffer = fs.readFileSync(audioFilePath);
     const audioFileName = path.basename(audioFilePath);
@@ -337,16 +410,28 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
     let transcription;
     let useWebhook = false;
 
+    // Debug webhook configuration
+    console.log(`\n${'─'.repeat(80)}`);
+    console.log(`🔧 Webhook Configuration Check:`);
+    console.log(`   Duration: ${durationSeconds}s (threshold: 600s)`);
+    console.log(`   Webhook URL configured: ${process.env.WEBHOOK_URL ? '✅ YES' : '❌ NO'}`);
+    if (process.env.WEBHOOK_URL) {
+      console.log(`   Webhook URL: ${process.env.WEBHOOK_URL}`);
+    }
+    console.log(`   Will use webhook: ${duration > 600 && process.env.WEBHOOK_URL ? '✅ YES' : '❌ NO'}`);
+    console.log(`${'─'.repeat(80)}\n`);
+
     // Use webhook for files longer than 10 minutes (if webhook URL is configured)
     if (duration > 600 && process.env.WEBHOOK_URL) {
-      console.log(`File is longer than 10 minutes - using async webhook transcription`);
+      console.log(`📡 File is longer than 10 minutes - using async webhook transcription`);
       useWebhook = true;
 
       // Generate request ID
       const requestId = `req_${videoId}`;
+      console.log(`🆔 Generated request ID: ${requestId}`);
 
       // Create job record
-      transcriptionJobs.set(requestId, {
+      const jobData = {
         status: 'processing',
         fileName: fileName,
         videoUrl: `/api/video/${videoFileName}`,
@@ -354,9 +439,15 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
         transcription: null,
         startedAt: new Date().toISOString(),
         completedAt: null
-      });
+      };
+      transcriptionJobs.set(requestId, jobData);
+      console.log(`💾 Job record created in memory`);
+      console.log(`📊 Current jobs in memory: ${transcriptionJobs.size}`);
 
       // Start async transcription with webhook
+      console.log(`🚀 Calling ElevenLabs API with webhook=true...`);
+      const apiCallStart = Date.now();
+
       transcription = await elevenlabs.speechToText.convert({
         file: audioFile,
         model_id: "scribe_v1",
@@ -366,10 +457,14 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
         webhook: true
       });
 
-      console.log(`Webhook transcription started with request_id: ${requestId}`);
+      const apiCallDuration = Date.now() - apiCallStart;
+      console.log(`✅ ElevenLabs API call completed in ${apiCallDuration}ms`);
+      console.log(`📋 API Response:`, JSON.stringify(transcription, null, 2));
+      console.log(`✅ Webhook transcription initiated - request_id: ${requestId}`);
+      console.log(`⏳ Waiting for webhook callback from ElevenLabs...`);
 
       // Return immediately with request ID for polling
-      res.json({
+      const response = {
         success: true,
         useWebhook: true,
         requestId: requestId,
@@ -377,11 +472,16 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
         videoUrl: `/api/video/${videoFileName}`,
         videoId: videoFileName,
         timestamp: new Date().toISOString()
-      });
+      };
+      console.log(`📤 Returning response to client:`, JSON.stringify(response, null, 2));
+      console.log(`${'='.repeat(80)}\n`);
+      res.json(response);
 
     } else {
       // File is short enough - transcribe synchronously
-      console.log(`File is under 10 minutes or webhook not configured - transcribing synchronously`);
+      console.log(`⚡ File is under 10 minutes or webhook not configured - transcribing synchronously`);
+      console.log(`🚀 Calling ElevenLabs API (synchronous mode)...`);
+      const apiCallStart = Date.now();
 
       transcription = await elevenlabs.speechToText.convert({
         file: audioFile,
@@ -391,10 +491,12 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
         diarize: true
       });
 
-      console.log(`Transcription completed for: ${fileName}`);
+      const apiCallDuration = Date.now() - apiCallStart;
+      console.log(`✅ Transcription completed in ${apiCallDuration}ms`);
+      console.log(`📊 Words transcribed: ${transcription.words?.length || 0}`);
 
       // Return transcription result immediately
-      res.json({
+      const response = {
         success: true,
         useWebhook: false,
         fileName: fileName,
@@ -402,7 +504,10 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
         videoId: videoFileName,
         transcription: transcription,
         timestamp: new Date().toISOString()
-      });
+      };
+      console.log(`📤 Returning response to client`);
+      console.log(`${'='.repeat(80)}\n`);
+      res.json(response);
     }
 
     // Clean up converted audio file if it exists
