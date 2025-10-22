@@ -144,18 +144,17 @@ async function extractAudio(videoFile) {
             ffmpegInstance = new window.FFmpeg();
 
             // Load ffmpeg core with blob URLs to avoid CORS issues
-            const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+            // Using single-threaded version (no worker needed)
+            const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
 
             console.log('📦 Downloading ffmpeg core files (this may take a moment)...');
             const coreURL = await window.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
             const wasmURL = await window.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-            const workerURL = await window.toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
 
-            console.log('🔧 Initializing ffmpeg...');
+            console.log('🔧 Initializing ffmpeg (single-threaded mode)...');
             await ffmpegInstance.load({
                 coreURL,
-                wasmURL,
-                workerURL
+                wasmURL
             });
 
             console.log('✅ FFmpeg.wasm initialized and ready');
