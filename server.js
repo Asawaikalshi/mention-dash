@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import ffmpeg from 'fluent-ffmpeg';
+import crypto from 'crypto';
 
 // ES module dirname workaround
 const __filename = fileURLToPath(import.meta.url);
@@ -126,13 +127,38 @@ app.get('/api/health', (req, res) => {
 // Webhook endpoint for async transcription results
 app.post('/api/webhook/transcription', express.json(), (req, res) => {
   try {
-    console.log('📨 Received webhook from ElevenLabs:', JSON.stringify(req.body, null, 2));
+    console.log('📨 Received webhook from ElevenLabs');
+
+    // Verify webhook signature if secret is configured
+    if (process.env.WEBHOOK_SECRET) {
+      const signature = req.headers['xi-signature'];
+      if (!signature) {
+        console.warn('⚠️  Missing webhook signature');
+        return res.status(401).json({ error: 'Missing signature' });
+      }
+
+      // Verify HMAC signature
+      const payload = JSON.stringify(req.body);
+      const expectedSignature = crypto
+        .createHmac('sha256', process.env.WEBHOOK_SECRET)
+        .update(payload)
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        console.warn('⚠️  Invalid webhook signature');
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+
+      console.log('✅ Webhook signature verified');
+    }
 
     // Validate webhook payload
     if (!req.body || req.body.type !== 'speech_to_text_transcription') {
       console.warn('⚠️  Invalid webhook payload received');
       return res.status(400).json({ error: 'Invalid webhook payload' });
     }
+
+    console.log('📨 Webhook payload:', JSON.stringify(req.body, null, 2));
 
     const { request_id, transcription } = req.body.data;
 
